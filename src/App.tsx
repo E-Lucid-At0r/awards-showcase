@@ -2,12 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BgmPlayer } from './components/BgmPlayer'
 import { FileDropzone } from './components/FileDropzone'
 import { SlideDeck } from './components/SlideDeck'
+import { WheelOfNames } from './components/WheelOfNames'
 import {
   buildSlides,
   parseAwardsCsv,
   type ParsedAwards,
   type Slide,
 } from './lib/awards'
+
+type Tab = 'show' | 'wheel'
 
 function slideKey(slide: Slide, i: number): string {
   if (slide.kind === 'title') {
@@ -20,6 +23,7 @@ function slideKey(slide: Slide, i: number): string {
 export default function App() {
   const presentationRef = useRef<HTMLDivElement>(null)
   const [presentationFs, setPresentationFs] = useState(false)
+  const [tab, setTab] = useState<Tab>('show')
 
   const [fileName, setFileName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -78,7 +82,7 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!slides.length) return
+      if (tab !== 'show' || !slides.length) return
       const t = e.target
       if (
         t instanceof HTMLInputElement ||
@@ -110,7 +114,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [go, slides.length])
+  }, [go, slides.length, tab])
 
   const resetFile = () => {
     if (document.fullscreenElement === presentationRef.current) {
@@ -146,11 +150,37 @@ export default function App() {
                 The Game Awards
               </h1>
               <p className="font-sans text-xs text-[#9d9795]">
-                Presentation voting — live results
+                {tab === 'show'
+                  ? 'Presentation voting — live results'
+                  : 'Random team picker'}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              {data && (
+              <nav className="flex gap-1 rounded-full border border-[#555960] p-1">
+                <button
+                  type="button"
+                  onClick={() => setTab('show')}
+                  className={`rounded-full px-3 py-1 font-sans text-xs font-medium transition ${
+                    tab === 'show'
+                      ? 'bg-[#cfb991]/15 text-[#ebd99f]'
+                      : 'text-[#9d9795] hover:text-[#ebd99f]'
+                  }`}
+                >
+                  Awards Show
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTab('wheel')}
+                  className={`rounded-full px-3 py-1 font-sans text-xs font-medium transition ${
+                    tab === 'wheel'
+                      ? 'bg-[#cfb991]/15 text-[#ebd99f]'
+                      : 'text-[#9d9795] hover:text-[#ebd99f]'
+                  }`}
+                >
+                  Wheel of Names
+                </button>
+              </nav>
+              {tab === 'show' && data && (
                 <>
                   <span className="font-sans text-xs text-[#c4bfc0]">
                     {data.teamCount} teams · {fileName}
@@ -177,7 +207,9 @@ export default function App() {
       )}
 
       <main className="relative z-10 mx-auto max-w-5xl px-4 pb-16 pt-8 sm:px-8">
-        {!data && (
+        {tab === 'wheel' && <WheelOfNames />}
+
+        {tab === 'show' && !data && (
           <div className="mx-auto max-w-xl">
             <FileDropzone onFile={loadText} />
             <p className="mt-6 text-center">
@@ -200,7 +232,7 @@ export default function App() {
           </div>
         )}
 
-        {data && (
+        {tab === 'show' && data && (
           <div
             ref={presentationRef}
             className="relative flex min-h-[55vh] flex-col rounded-2xl border border-[#555960]/40 bg-[#000000] px-4 pb-20 pt-6 sm:min-h-[60vh] sm:px-8 sm:pb-16 sm:pt-8 [&:fullscreen]:min-h-screen [&:fullscreen]:justify-center [&:fullscreen]:rounded-none [&:fullscreen]:border-0 [&:fullscreen]:bg-[#000000] [&:fullscreen]:px-6 [&:fullscreen]:pb-28 [&:fullscreen]:pt-10"
