@@ -3,9 +3,15 @@ import { useCallback, useRef } from 'react'
 export function FileDropzone({
   onFile,
   disabled,
+  title = 'Load voting results',
+  hint = 'Drop a CSV here, or choose a file (Google Form export works)',
+  loadedName,
 }: {
   onFile: (text: string, fileName: string) => void
   disabled?: boolean
+  title?: string
+  hint?: string
+  loadedName?: string
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -42,10 +48,11 @@ export function FileDropzone({
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDrop}
     >
-      <p className="font-display text-xl text-[#e8e4dc]">Load voting results</p>
-      <p className="mt-2 font-sans text-sm text-[#8a8275]">
-        Drop a CSV here, or choose a file (Google Form export works)
-      </p>
+      <p className="font-display text-xl text-[#e8e4dc]">{title}</p>
+      <p className="mt-2 font-sans text-sm text-[#8a8275]">{hint}</p>
+      {loadedName && (
+        <p className="mt-3 font-sans text-sm text-[#cfb991]">✓ {loadedName}</p>
+      )}
       <button
         type="button"
         onClick={() => inputRef.current?.click()}

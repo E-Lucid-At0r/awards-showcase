@@ -21,6 +21,27 @@ export function parseNames(raw: string): string[] {
   return names
 }
 
+/** Uniformly random permutation (Fisher-Yates); does not mutate the input. */
+export function shuffled<T>(items: T[]): T[] {
+  const out = [...items]
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    const tmp = out[i]
+    out[i] = out[j]
+    out[j] = tmp
+  }
+  return out
+}
+
+/** Removes the (single) line matching `name`, case-insensitively. */
+export function removeName(raw: string, name: string): string {
+  const key = name.trim().toLowerCase()
+  return raw
+    .split('\n')
+    .filter((line) => line.trim().toLowerCase() !== key)
+    .join('\n')
+}
+
 export function buildSegments(
   entries: { name: string; weight: number }[],
 ): WheelSegment[] {

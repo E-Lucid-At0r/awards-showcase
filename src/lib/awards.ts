@@ -1,7 +1,5 @@
 import Papa from 'papaparse'
 
-export const CATEGORY_COUNT = 8
-
 export function round2(n: number): number {
   return Math.round(n * 100) / 100
 }
@@ -46,6 +44,28 @@ export interface ParsedAwards {
   categoryLabels: string[]
   byCategory: CategoryBlock[]
   overall: CategoryBlock
+  /** Set when student scoring is combined in: distinct professor/TA voters (weight vs students). */
+  professorCount?: number
+  /** Non-fatal data warnings (unmatched teams etc.). */
+  notes?: string[]
+}
+
+/** Renames a category (by index) both in `categoryLabels` and its `byCategory` block. */
+export function renameCategory(
+  data: ParsedAwards,
+  index: number,
+  label: string,
+): ParsedAwards {
+  return {
+    ...data,
+    categoryLabels: data.categoryLabels.map((l, i) => (i === index ? label : l)),
+    byCategory: data.byCategory.map((b, i) => (i === index ? { ...b, label } : b)),
+  }
+}
+
+/** Renames the final/overall award section (e.g. "Grand average"). */
+export function renameOverall(data: ParsedAwards, label: string): ParsedAwards {
+  return { ...data, overall: { ...data.overall, label } }
 }
 
 export type Slide =
@@ -120,30 +140,41 @@ function mean(nums: number[]): number {
   return nums.reduce((a, b) => a + b, 0) / nums.length
 }
 
-/** Google Form: group by team, average judge rows. */
-function parseGroupMode(
+interface GroupSheet {
+  teamNames: string[]
+  scoreKeys: string[]
+  /** Per team: mean score of every voter row, one entry per score column. */
+  byTeamScores: Map<string, number[]>
+  /** Most distinct voter names seen on any one team — robust to name typos in a single row. */
+  voterCount: number
+}
+
+/** Google Form: group rows by team, average each score column. */
+function readGroupSheet(
   rows: Record<string, string>[],
   headers: string[],
-): ParsedAwards {
+): GroupSheet {
   const teamKey =
     headers.find((h) => /presenting team name/i.test(h)) ?? ''
+  if (!teamKey) {
+    throw new Error('Missing a "Presenting Team Name" column.')
+  }
   const fullKey = headers.find(
     (h) => /^full name$/i.test(h) || /full name/i.test(h),
   )
+  const ti = headers.indexOf(teamKey)
+  const voterKey = fullKey ?? headers[ti + 1]
 
   let scoreKeys: string[]
   if (fullKey !== undefined) {
     const i = headers.indexOf(fullKey)
-    scoreKeys = headers.slice(i + 1, i + 1 + CATEGORY_COUNT)
+    scoreKeys = headers.slice(i + 1)
   } else {
-    const ti = headers.indexOf(teamKey)
-    scoreKeys = headers.slice(ti + 2, ti + 2 + CATEGORY_COUNT)
+    scoreKeys = headers.slice(ti + 2)
   }
 
-  if (scoreKeys.length < CATEGORY_COUNT) {
-    throw new Error(
-      `Need ${CATEGORY_COUNT} score columns after team info. Found ${scoreKeys.length}.`,
-    )
+  if (scoreKeys.length < 1) {
+    throw new Error('Need at least one score column after team info.')
   }
 
   const groups = new Map<string, Record<string, string>[]>()
@@ -177,6 +208,25 @@ function parseGroupMode(
     byTeamScores.set(team, scores)
   }
 
+  let voterCount = 0
+  for (const teamRows of groups.values()) {
+    const names = new Set(
+      teamRows
+        .map((r) => String(r[voterKey] ?? '').trim().toLowerCase())
+        .filter(Boolean),
+    )
+    voterCount = Math.max(voterCount, names.size)
+  }
+
+  return { teamNames, scoreKeys, byTeamScores, voterCount }
+}
+
+function buildGroupAwards(
+  teamNames: string[],
+  scoreKeys: string[],
+  byTeamScores: Map<string, number[]>,
+  extra: Partial<ParsedAwards> = {},
+): ParsedAwards {
   const categoryLabels = scoreKeys.map((k) => cleanCategoryLabel(k.trim()))
 
   const byCategory: CategoryBlock[] = categoryLabels.map((label, i) => ({
@@ -202,20 +252,27 @@ function parseGroupMode(
     categoryLabels,
     byCategory,
     overall: { label: 'Grand average', podium: overallPodium },
+    ...extra,
   }
 }
 
-/** One row per nominee: col0 = name, next 8 = scores */
+function parseGroupMode(
+  rows: Record<string, string>[],
+  headers: string[],
+): ParsedAwards {
+  const { teamNames, scoreKeys, byTeamScores } = readGroupSheet(rows, headers)
+  return buildGroupAwards(teamNames, scoreKeys, byTeamScores)
+}
+
+/** One row per nominee: col0 = name, remaining columns = scores */
 function parseRowMode(
   rows: Record<string, string>[],
   headers: string[],
 ): ParsedAwards {
   const nameKey = headers[0]
-  const scoreKeys = headers.slice(1, 1 + CATEGORY_COUNT)
-  if (scoreKeys.length < CATEGORY_COUNT) {
-    throw new Error(
-      `Row mode needs name + ${CATEGORY_COUNT} score columns (${1 + CATEGORY_COUNT} columns).`,
-    )
+  const scoreKeys = headers.slice(1)
+  if (scoreKeys.length < 1) {
+    throw new Error('Row mode needs a name column plus at least one score column.')
   }
 
   const contestants: { name: string; scores: number[] }[] = []
@@ -262,7 +319,7 @@ function parseRowMode(
   }
 }
 
-export function parseAwardsCsv(csv: string): ParsedAwards {
+function readCsv(csv: string) {
   const parsed = Papa.parse<Record<string, string>>(csv, {
     header: true,
     skipEmptyLines: 'greedy',
@@ -273,9 +330,9 @@ export function parseAwardsCsv(csv: string): ParsedAwards {
   }
 
   const fields = parsed.meta.fields?.filter(Boolean) ?? []
-  if (fields.length < 1 + CATEGORY_COUNT) {
+  if (fields.length < 2) {
     throw new Error(
-      `Need at least ${1 + CATEGORY_COUNT} columns. Found ${fields.length}.`,
+      `Need at least a name column and one score column. Found ${fields.length}.`,
     )
   }
 
@@ -287,11 +344,84 @@ export function parseAwardsCsv(csv: string): ParsedAwards {
     throw new Error('No data rows in CSV.')
   }
 
+  return { rows, fields }
+}
+
+export function parseAwardsCsv(csv: string): ParsedAwards {
+  const { rows, fields } = readCsv(csv)
   const hasTeamCol = fields.some((f) => /presenting team name/i.test(f))
   if (hasTeamCol) {
     return parseGroupMode(rows, fields)
   }
   return parseRowMode(rows, fields)
+}
+
+const normTeam = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim()
+
+/**
+ * Professor/TA sheet + student sheet (both Google Form style, grouped by team).
+ * Per column: (P × professorAvg + 1 × studentAvg) / (P + 1), P = professors voting per team.
+ * Teams are matched by name (case/space-insensitive); a team with no student votes
+ * falls back to its professor average. Student-only teams are dropped.
+ */
+export function parseCombinedCsv(
+  professorCsv: string,
+  studentCsv: string,
+): ParsedAwards {
+  const read = (csv: string, who: string) => {
+    try {
+      const { rows, fields } = readCsv(csv)
+      return readGroupSheet(rows, fields)
+    } catch (e) {
+      throw new Error(`${who}: ${e instanceof Error ? e.message : 'could not parse.'}`)
+    }
+  }
+  const prof = read(professorCsv, 'Professor/TA CSV')
+  const stud = read(studentCsv, 'Student CSV')
+
+  if (prof.scoreKeys.length !== stud.scoreKeys.length) {
+    throw new Error(
+      `Professor/TA CSV has ${prof.scoreKeys.length} score columns but student CSV has ${stud.scoreKeys.length}.`,
+    )
+  }
+
+  const P = prof.voterCount
+  const studentByTeam = new Map(
+    stud.teamNames.map((t) => [normTeam(t), stud.byTeamScores.get(t)!]),
+  )
+
+  const noStudentVotes: string[] = []
+  const combined = new Map<string, number[]>()
+  for (const team of prof.teamNames) {
+    const p = prof.byTeamScores.get(team)!
+    const s = studentByTeam.get(normTeam(team))
+    if (!s) {
+      noStudentVotes.push(team)
+      combined.set(team, p)
+    } else {
+      combined.set(team, p.map((v, i) => (P * v + s[i]) / (P + 1)))
+    }
+  }
+
+  if (noStudentVotes.length === prof.teamNames.length) {
+    throw new Error('No team names match between the professor/TA and student CSVs.')
+  }
+
+  const profTeams = new Set(prof.teamNames.map(normTeam))
+  const studentOnly = stud.teamNames.filter((t) => !profTeams.has(normTeam(t)))
+
+  const notes: string[] = []
+  if (noStudentVotes.length) {
+    notes.push(`No student votes (professor score only): ${noStudentVotes.join(', ')}`)
+  }
+  if (studentOnly.length) {
+    notes.push(`Student teams not in professor CSV (ignored): ${studentOnly.join(', ')}`)
+  }
+
+  return buildGroupAwards(prof.teamNames, prof.scoreKeys, combined, {
+    professorCount: P,
+    notes,
+  })
 }
 
 /**

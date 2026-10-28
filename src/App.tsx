@@ -1,16 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BgmPlayer } from './components/BgmPlayer'
+import { CategoryEditor } from './components/CategoryEditor'
 import { FileDropzone } from './components/FileDropzone'
 import { SlideDeck } from './components/SlideDeck'
 import { WheelOfNames } from './components/WheelOfNames'
 import {
   buildSlides,
   parseAwardsCsv,
+  parseCombinedCsv,
+  renameCategory,
+  renameOverall,
   type ParsedAwards,
   type Slide,
 } from './lib/awards'
 
-type Tab = 'show' | 'wheel'
+type Tab = 'show' | 'categories' | 'wheel'
+
+interface UploadedCsv {
+  text: string
+  name: string
+}
+
+interface OriginalLabels {
+  categories: string[]
+  overall: string
+}
 
 function slideKey(slide: Slide, i: number): string {
   if (slide.kind === 'title') {
@@ -28,7 +42,14 @@ export default function App() {
   const [fileName, setFileName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [data, setData] = useState<ParsedAwards | null>(null)
+  const [originalLabels, setOriginalLabels] = useState<OriginalLabels | null>(
+    null,
+  )
   const [slideIndex, setSlideIndex] = useState(0)
+  const [infoOpen, setInfoOpen] = useState(false)
+  const [includeStudents, setIncludeStudents] = useState(false)
+  const [profFile, setProfFile] = useState<UploadedCsv | null>(null)
+  const [studentFile, setStudentFile] = useState<UploadedCsv | null>(null)
 
   const slides = useMemo(() => (data ? buildSlides(data) : []), [data])
   const slide = slides[slideIndex] ?? null
@@ -43,19 +64,37 @@ export default function App() {
     return () => document.removeEventListener('fullscreenchange', onFs)
   }, [])
 
-  const loadText = useCallback((text: string, name: string) => {
+  const load = useCallback((parse: () => ParsedAwards, name: string) => {
     setError(null)
     try {
-      const parsed = parseAwardsCsv(text)
+      const parsed = parse()
       setData(parsed)
+      setOriginalLabels({
+        categories: parsed.categoryLabels,
+        overall: parsed.overall.label,
+      })
       setFileName(name)
       setSlideIndex(0)
     } catch (e) {
       setData(null)
+      setOriginalLabels(null)
       setFileName(null)
       setError(e instanceof Error ? e.message : 'Could not parse CSV.')
     }
   }, [])
+
+  const loadText = useCallback(
+    (text: string, name: string) => load(() => parseAwardsCsv(text), name),
+    [load],
+  )
+
+  const loadCombined = useCallback(() => {
+    if (!profFile || !studentFile) return
+    load(
+      () => parseCombinedCsv(profFile.text, studentFile.text),
+      `${profFile.name} + ${studentFile.name}`,
+    )
+  }, [load, profFile, studentFile])
 
   const loadSample = useCallback(async () => {
     setError(null)
@@ -121,10 +160,32 @@ export default function App() {
       void document.exitFullscreen?.()
     }
     setData(null)
+    setOriginalLabels(null)
     setFileName(null)
+    setProfFile(null)
+    setStudentFile(null)
     setSlideIndex(0)
     setError(null)
   }
+
+  const updateCategoryLabel = useCallback((index: number, label: string) => {
+    setData((prev) => (prev ? renameCategory(prev, index, label) : prev))
+  }, [])
+
+  const updateOverallLabel = useCallback((label: string) => {
+    setData((prev) => (prev ? renameOverall(prev, label) : prev))
+  }, [])
+
+  const resetLabels = useCallback(() => {
+    setData((prev) => {
+      if (!prev || !originalLabels) return prev
+      const withCategories = originalLabels.categories.reduce(
+        (acc, label, i) => renameCategory(acc, i, label),
+        prev,
+      )
+      return renameOverall(withCategories, originalLabels.overall)
+    })
+  }, [originalLabels])
 
   const togglePresentationFullscreen = useCallback(() => {
     const el = presentationRef.current
@@ -150,9 +211,9 @@ export default function App() {
                 The Game Awards
               </h1>
               <p className="font-sans text-xs text-[#9d9795]">
-                {tab === 'show'
-                  ? 'Presentation voting — live results'
-                  : 'Random team picker'}
+                {tab === 'show' && 'Presentation voting — live results'}
+                {tab === 'categories' && 'Rename categories before presenting'}
+                {tab === 'wheel' && 'Random team picker'}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -170,6 +231,17 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => setTab('categories')}
+                  className={`rounded-full px-3 py-1 font-sans text-xs font-medium transition ${
+                    tab === 'categories'
+                      ? 'bg-[#cfb991]/15 text-[#ebd99f]'
+                      : 'text-[#9d9795] hover:text-[#ebd99f]'
+                  }`}
+                >
+                  Categories
+                </button>
+                <button
+                  type="button"
                   onClick={() => setTab('wheel')}
                   className={`rounded-full px-3 py-1 font-sans text-xs font-medium transition ${
                     tab === 'wheel'
@@ -180,11 +252,16 @@ export default function App() {
                   Wheel of Names
                 </button>
               </nav>
-              {tab === 'show' && data && (
+              {(tab === 'show' || tab === 'categories') && data && (
                 <>
-                  <span className="font-sans text-xs text-[#c4bfc0]">
-                    {data.teamCount} teams · {fileName}
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setInfoOpen((v) => !v)}
+                    aria-expanded={infoOpen}
+                    className="rounded-lg border border-[#555960] px-3 py-1.5 font-sans text-xs font-medium text-[#ebd99f] hover:bg-[#555960]/20"
+                  >
+                    Details {infoOpen ? '▴' : '▾'}
+                  </button>
                   <button
                     type="button"
                     onClick={resetFile}
@@ -192,16 +269,25 @@ export default function App() {
                   >
                     Load another CSV
                   </button>
-                  <button
-                    type="button"
-                    onClick={togglePresentationFullscreen}
-                    className="rounded-lg border border-[#555960] px-3 py-1.5 font-sans text-xs font-medium text-[#ebd99f] hover:bg-[#555960]/20"
-                  >
-                    Fullscreen
-                  </button>
+                  {tab === 'show' && (
+                    <button
+                      type="button"
+                      onClick={togglePresentationFullscreen}
+                      className="rounded-lg border border-[#555960] px-3 py-1.5 font-sans text-xs font-medium text-[#ebd99f] hover:bg-[#555960]/20"
+                    >
+                      Fullscreen
+                    </button>
+                  )}
                 </>
               )}
             </div>
+            {(tab === 'show' || tab === 'categories') && data && infoOpen && (
+              <p className="basis-full font-sans text-xs text-[#c4bfc0]">
+                {data.teamCount} teams · {fileName}
+                {data.professorCount !== undefined &&
+                  ` · ${data.professorCount} professors/TAs, weight ${data.professorCount}:1 vs students`}
+              </p>
+            )}
           </div>
         </header>
       )}
@@ -209,18 +295,78 @@ export default function App() {
       <main className="relative z-10 mx-auto max-w-5xl px-4 pb-16 pt-8 sm:px-8">
         {tab === 'wheel' && <WheelOfNames />}
 
+        {tab === 'categories' && (
+          <CategoryEditor
+            data={data}
+            canReset={originalLabels !== null}
+            onRenameCategory={updateCategoryLabel}
+            onRenameOverall={updateOverallLabel}
+            onReset={resetLabels}
+            onGoToUpload={() => setTab('show')}
+          />
+        )}
+
         {tab === 'show' && !data && (
           <div className="mx-auto max-w-xl">
-            <FileDropzone onFile={loadText} />
-            <p className="mt-6 text-center">
-              <button
-                type="button"
-                onClick={loadSample}
-                className="font-sans text-sm text-[#daa000] underline-offset-4 hover:underline"
-              >
-                Try sample data
-              </button>
-            </p>
+            <label className="mb-6 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-[#555960]/30 bg-white/[0.02] px-4 py-3">
+              <span className="font-sans text-sm text-[#c4bfc0]">
+                Include students&apos; scoring
+              </span>
+              <span className="relative inline-flex h-5 w-9 shrink-0 items-center">
+                <input
+                  type="checkbox"
+                  checked={includeStudents}
+                  onChange={(e) => setIncludeStudents(e.target.checked)}
+                  className="peer sr-only"
+                />
+                <span className="absolute inset-0 rounded-full bg-[#555960]/60 transition peer-checked:bg-[#cfb991]/70" />
+                <span className="absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-[#ebd99f] transition peer-checked:translate-x-4" />
+              </span>
+            </label>
+
+            {includeStudents ? (
+              <div className="space-y-4">
+                <FileDropzone
+                  onFile={(text, name) => setProfFile({ text, name })}
+                  title="Professors / TAs"
+                  hint="CSV with the professor and TA votes"
+                  loadedName={profFile?.name}
+                />
+                <FileDropzone
+                  onFile={(text, name) => setStudentFile({ text, name })}
+                  title="Students"
+                  hint="CSV with the student votes"
+                  loadedName={studentFile?.name}
+                />
+                <p className="text-center font-sans text-xs text-[#9d9795]">
+                  Each column: (professors × prof avg + 1 × student avg) ÷
+                  (professors + 1)
+                </p>
+                <p className="text-center">
+                  <button
+                    type="button"
+                    onClick={loadCombined}
+                    disabled={!profFile || !studentFile}
+                    className="rounded-full border border-[#c9a227]/60 bg-[#c9a227]/10 px-8 py-3 font-sans text-sm font-semibold uppercase tracking-wider text-[#e8d48b] transition hover:bg-[#c9a227]/20 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Calculate results
+                  </button>
+                </p>
+              </div>
+            ) : (
+              <>
+                <FileDropzone onFile={loadText} />
+                <p className="mt-6 text-center">
+                  <button
+                    type="button"
+                    onClick={loadSample}
+                    className="font-sans text-sm text-[#daa000] underline-offset-4 hover:underline"
+                  >
+                    Try sample data
+                  </button>
+                </p>
+              </>
+            )}
             {error && (
               <p
                 className="mt-6 rounded-lg border border-red-500/40 bg-red-950/40 px-4 py-3 text-center font-sans text-sm text-red-200"
@@ -231,6 +377,15 @@ export default function App() {
             )}
           </div>
         )}
+
+        {tab === 'show' && data?.notes?.map((note) => (
+          <p
+            key={note}
+            className="mb-3 rounded-lg border border-[#daa000]/40 bg-[#daa000]/10 px-4 py-2 text-center font-sans text-xs text-[#ebd99f]"
+          >
+            {note}
+          </p>
+        ))}
 
         {tab === 'show' && data && (
           <div
